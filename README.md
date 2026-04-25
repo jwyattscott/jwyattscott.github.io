@@ -1,1 +1,0 @@
-# jwyattscott.github.io
