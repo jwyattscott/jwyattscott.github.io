@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>terminal</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0d0d0f;
+      --surface:  #131316;
+      --border:   #2a2a30;
+      --green:    #a8ff78;
+      --cyan:     #78d6ff;
+      --yellow:   #ffd878;
+      --red:      #ff7878;
+      --muted:    #555560;
+      --text:     #d4d4d8;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      font-family: 'JetBrains Mono', monospace;
+      overflow: hidden;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* Subtle scanline texture */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0,0,0,0.08) 2px,
+        rgba(0,0,0,0.08) 4px
+      );
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    .window {
+      width: min(960px, 96vw);
+      height: min(600px, 90vh);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      box-shadow:
+        0 0 0 1px #000,
+        0 30px 80px rgba(0,0,0,0.7),
+        0 0 60px rgba(168,255,120,0.03);
+      animation: fadeIn 0.4s ease both;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(12px) scale(0.99); }
+      to   { opacity: 1; transform: none; }
+    }
+
+    .titlebar {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+      user-select: none;
+    }
+
+    .dots { display: flex; gap: 7px; }
+    .dot {
+      width: 12px; height: 12px;
+      border-radius: 50%;
+    }
+    .dot-red    { background: #ff5f57; }
+    .dot-yellow { background: #febc2e; }
+    .dot-green  { background: #28c840; }
+
+    .title {
+      flex: 1;
+      text-align: center;
+      font-size: 12px;
+      color: var(--muted);
+      letter-spacing: 0.05em;
+    }
+
+    .spacer { width: 43px; }
+
+    .term-wrap {
+      flex: 1;
+      min-height: 0;
+      background: var(--bg);
+      padding: 10px 8px 8px;
+    }
+
+    /* xterm overrides */
+    .xterm { height: 100%; }
+    .xterm-viewport { background: transparent !important; }
+    .xterm-screen  { background: transparent !important; }
+  </style>
+</head>
+<body>
+
+<div class="window">
+  <div class="titlebar">
+    <div class="dots">
+      <div class="dot dot-red"></div>
+      <div class="dot dot-yellow"></div>
+      <div class="dot dot-green"></div>
+    </div>
+    <div class="title">zsh — guest@localhost</div>
+    <div class="spacer"></div>
+  </div>
+  <div class="term-wrap" id="terminal"></div>
+</div>
+
+<script>
+// ─── Terminal setup ────────────────────────────────────────────────────────────
+const term = new Terminal({
+  fontFamily: "'JetBrains Mono', monospace",
+  fontSize: 14,
+  lineHeight: 1.5,
+  cursorBlink: true,
+
+  theme: {
+    background:   '#0d0d0f',
+    foreground:   '#d4d4d8',
+    cursor:       '#a8ff78',
+    cursorAccent: '#0d0d0f',
+    black:        '#1e1e22',
+    red:          '#ff7878',
+    green:        '#a8ff78',
+    yellow:       '#ffd878',
+    blue:         '#78a8ff',
+    magenta:      '#e078ff',
+    cyan:         '#78d6ff',
+    white:        '#d4d4d8',
+    brightBlack:  '#555560',
+    brightWhite:  '#ffffff',
+  },
+  allowProposedApi: true,
+});
+
+const fitAddon = new FitAddon.FitAddon();
+term.loadAddon(fitAddon);
+term.open(document.getElementById('terminal'));
+fitAddon.fit();
+window.addEventListener('resize', () => fitAddon.fit());
+
+// ─── ANSI helpers ─────────────────────────────────────────────────────────────
+const c = {
+  reset:   '\x1b[0m',
+  bold:    '\x1b[1m',
+  dim:     '\x1b[2m',
+  green:   '\x1b[38;2;168;255;120m',
+  cyan:    '\x1b[38;2;120;214;255m',
+  yellow:  '\x1b[38;2;255;216;120m',
+  red:     '\x1b[38;2;255;120;120m',
+  magenta: '\x1b[38;2;224;120;255m',
+  muted:   '\x1b[38;2;85;85;96m',
+  white:   '\x1b[38;2;212;212;216m',
+};
+const w = (color, text) => `${color}${text}${c.reset}`;
+
+// ─── Filesystem simulation ─────────────────────────────────────────────────────
+const fs = {
+  '~': {
+    type: 'dir',
+    children: {
+      'readme.txt': {
+        type: 'file',
+        content: `Welcome to Wyatt Scott's terminal portfolio.\n\nType ${w(c.cyan,'help')} to see available commands.\nType ${w(c.cyan,'ls projects/')} to browse my projects.\nType ${w(c.cyan,'ls experience/')} to browse my work experience.\n`
+      },
+      'about.txt': {
+        type: 'file',
+        content: `Name:     Wyatt Scott\nGitHub:   github.com/jwyattscott\nShell:    zsh (simulated)\n`
+      },
+      'projects': {
+        type: 'dir',
+        children: {
+          'NavajoPipes': {
+            type: 'dir',
+            children: {
+              'readme.md': {
+                type: 'file',
+                content: `# NavajoPipes\n\nA pipe flow solver for the EWB-UCLA Navajo Water Project.\n\nLanguage:  Python\nGitHub:    github.com/jwyattscott/NavajoPipes\n\nMotivation:\n  The Navajo Water Project designs a solar-powered water system\n  for a home in the Navajo Nation. This solver models pipe flow\n  and gives insight into system behavior — more transparent than\n  tools like EPANET.\n\nFeatures:\n  - Pipe system solver\n  - Unit conversion utilities\n  - Pump curve functions\n  - Linear and quadratic interpolation\n  - Example Jupyter notebooks\n`
+              },
+            }
+          },
+          'jwyattscott.github.io': {
+            type: 'dir',
+            children: {
+              'readme.md': {
+                type: 'file',
+                content: `# jwyattscott.github.io\n\nPersonal GitHub Pages site.\n\nGitHub:  github.com/jwyattscott/jwyattscott.github.io\n\nYou're looking at it right now.\n`
+              },
+            }
+          },
+        }
+      },
+      'experience': {
+        type: 'dir',
+        children: {
+          'Concrete.ai': {
+            type: 'dir',
+            children: {
+              'DataEngineerIntern': {
+                type: 'dir',
+                children: {
+                  'readme.md': {
+                    type: 'file',
+                    content: `# Data Engineer Intern\n`
+                  },
+                }
+              },
+              'MaterialInformaticsEngineer': {
+                type: 'dir',
+                children: {
+                  'readme.md': {
+                    type: 'file',
+                    content: `# Material Informatics Engineer\n`
+                  },
+                }
+              },
+            }
+          },
+        }
+      },
+    }
+  }
+};
+
+// ─── State ────────────────────────────────────────────────────────────────────
+let cwd = '~';
+let inputBuffer = '';
+let historyStack = [];
+let historyIdx = -1;
+
+function resolvePath(path) {
+  if (path === '~' || path === '') return '~';
+  if (path.startsWith('~/')) path = path.slice(2);
+  if (path === '~') return '~';
+
+  const parts = (cwd === '~' ? [] : cwd.replace('~/', '').split('/'));
+  for (const seg of path.split('/')) {
+    if (seg === '..') parts.pop();
+    else if (seg && seg !== '.') parts.push(seg);
+  }
+  return parts.length ? '~/' + parts.join('/') : '~';
+}
+
+function getNode(path) {
+  if (path === '~') return fs['~'];
+  const parts = path.replace('~/', '').split('/');
+  let node = fs['~'];
+  for (const p of parts) {
+    if (!node || node.type !== 'dir' || !node.children[p]) return null;
+    node = node.children[p];
+  }
+  return node;
+}
+
+function cwdDisplay() {
+  return w(c.cyan, cwd);
+}
+
+function prompt() {
+  return `${w(c.green, 'guest')}${w(c.muted,'@')}${w(c.muted,'localhost')} ${cwdDisplay()} ${w(c.yellow,'%')} `;
+}
+
+// ─── Commands ─────────────────────────────────────────────────────────────────
+const commands = {
+
+  help() {
+    const row = (cmd, desc) =>
+      `  ${w(c.green, cmd.padEnd(12))} ${w(c.muted, desc)}`;
+    return [
+      '',
+      w(c.bold+c.white, 'Available commands'),
+      '',
+      row('help',     'show this message'),
+      row('ls',       'list directory contents'),
+      row('cd',       'change directory'),
+      row('cat',      'print file contents'),
+      row('pwd',      'print working directory'),
+      row('echo',     'print arguments'),
+      row('clear',    'clear the screen'),
+      row('whoami',   'current user'),
+      row('date',     'current date and time'),
+      row('history',  'command history'),
+      row('uname',    'system info'),
+      row('neofetch', 'system summary (fancy)'),
+      '',
+    ].join('\r\n');
+  },
+
+  ls(args) {
+    const target = args[0] ? resolvePath(args[0]) : cwd;
+    const node = getNode(target);
+    if (!node) return w(c.red, `ls: ${args[0]}: No such file or directory`);
+    if (node.type === 'file') return args[0];
+    const entries = Object.entries(node.children);
+    if (!entries.length) return '';
+    return entries.map(([name, n]) =>
+      n.type === 'dir'
+        ? w(c.cyan+c.bold, name + '/')
+        : w(c.white, name)
+    ).join('  ');
+  },
+
+  cd(args) {
+    const target = args[0] ? resolvePath(args[0]) : '~';
+    const node = getNode(target);
+    if (!node) return w(c.red, `cd: no such file or directory: ${args[0]}`);
+    if (node.type !== 'dir') return w(c.red, `cd: not a directory: ${args[0]}`);
+    cwd = target;
+    return '';
+  },
+
+  cat(args) {
+    if (!args[0]) return w(c.red, 'cat: missing operand');
+    const target = resolvePath(args[0]);
+    const node = getNode(target);
+    if (!node) return w(c.red, `cat: ${args[0]}: No such file or directory`);
+    if (node.type === 'dir') return w(c.red, `cat: ${args[0]}: Is a directory`);
+    return node.content.replace(/\n/g, '\r\n');
+  },
+
+  pwd() {
+    return cwd.replace('~', '/home/guest');
+  },
+
+  echo(args) {
+    return args.join(' ')
+      .replace(/\$USER/g, 'guest')
+      .replace(/\$HOME/g, '/home/guest')
+      .replace(/\$SHELL/g, '/bin/zsh');
+  },
+
+  whoami() { return 'guest'; },
+
+  date() { return new Date().toString(); },
+
+  history() {
+    if (!historyStack.length) return w(c.muted, '(no history)');
+    return historyStack.map((h, i) =>
+      `  ${w(c.muted, String(i + 1).padStart(3))}  ${h}`
+    ).join('\r\n');
+  },
+
+  uname(args) {
+    const all = args.includes('-a');
+    if (all) return 'BrowserOS 1.0.0 xterm.js #1 SMP PREEMPT aarch64 GNU/Linux';
+    return 'BrowserOS';
+  },
+
+  neofetch() {
+    const info = [
+      ['OS',     'BrowserOS 1.0'],
+      ['Shell',  'zsh 5.9 (simulated)'],
+      ['Term',   'xterm.js 5.3'],
+      ['CPU',    navigator.hardwareConcurrency + '-core virtual'],
+      ['Memory', '∞ MB (JavaScript heap)'],
+      ['Uptime', Math.floor(performance.now()/1000) + 's'],
+    ];
+    const logo = [
+      w(c.green,   '   ████████   '),
+      w(c.green,   '  ██      ██  '),
+      w(c.yellow,  '  ██  ██  ██  '),
+      w(c.yellow,  '  ██      ██  '),
+      w(c.cyan,    '  ████████████'),
+      w(c.cyan,    '              '),
+    ];
+    const lines = info.map(([k, v], i) =>
+      `${logo[i] || '              '}  ${w(c.green+c.bold, k.padEnd(8))}${w(c.white, v)}`
+    );
+    return ['', ...lines, ''].join('\r\n');
+  },
+
+  clear() {
+    term.clear();
+    return null; // signal: don't print anything, don't add blank line
+  },
+};
+
+// ─── Tab completion ───────────────────────────────────────────────────────────
+function longestCommonPrefix(strs) {
+  if (!strs.length) return '';
+  let prefix = strs[0];
+  for (let i = 1; i < strs.length; i++) {
+    while (!strs[i].startsWith(prefix)) prefix = prefix.slice(0, -1);
+  }
+  return prefix;
+}
+
+function getCompletions(buf) {
+  const tokens = buf.split(' ');
+
+  // Completing the command name (first token, no space yet)
+  if (tokens.length === 1) {
+    const partial = tokens[0];
+    return Object.keys(commands).filter(k => k.startsWith(partial)).sort();
+  }
+
+  // Completing a path argument
+  const partial = tokens[tokens.length - 1];
+  const lastSlash = partial.lastIndexOf('/');
+  const dirPart  = lastSlash >= 0 ? partial.slice(0, lastSlash + 1) : '';
+  const basePart = lastSlash >= 0 ? partial.slice(lastSlash + 1)    : partial;
+  const searchDir = dirPart ? resolvePath(dirPart) : cwd;
+  const node = getNode(searchDir);
+  if (!node || node.type !== 'dir') return [];
+
+  return Object.entries(node.children)
+    .filter(([name]) => name.startsWith(basePart))
+    .map(([name, n]) => dirPart + name + (n.type === 'dir' ? '/' : ''))
+    .sort();
+}
+
+function tabComplete() {
+  const matches = getCompletions(inputBuffer);
+  if (!matches.length) return;
+
+  if (matches.length === 1) {
+    const tokens = inputBuffer.split(' ');
+    tokens[tokens.length - 1] = matches[0];
+    // Add trailing space for commands; dirs already end with /
+    const newBuf = tokens.join(' ') + (tokens.length === 1 && !matches[0].endsWith('/') ? ' ' : '');
+    replaceInput(newBuf);
+    return;
+  }
+
+  // Fill in longest common prefix then show all matches
+  const prefix = longestCommonPrefix(matches);
+  const tokens = inputBuffer.split(' ');
+  tokens[tokens.length - 1] = prefix;
+
+  term.write('\r\n');
+  const colW = Math.max(...matches.map(m => m.length)) + 2;
+  const cols = Math.max(1, Math.floor(80 / colW));
+  for (let i = 0; i < matches.length; i += cols) {
+    const row = matches.slice(i, i + cols)
+      .map(m => w(m.endsWith('/') ? c.cyan : c.white, m.padEnd(colW)))
+      .join('');
+    term.writeln(row);
+  }
+
+  replaceInput(tokens.join(' '));
+}
+
+// ─── Input handling ───────────────────────────────────────────────────────────
+function printLine(text) {
+  term.writeln(text);
+}
+
+function runCommand(raw) {
+  const trimmed = raw.trim();
+  if (!trimmed) { term.write('\r\n'); printPrompt(); return; }
+
+  historyStack.push(trimmed);
+  historyIdx = historyStack.length;
+
+  term.write('\r\n');
+
+  const [cmd, ...args] = trimmed.split(/\s+/);
+
+  if (commands[cmd]) {
+    const out = commands[cmd](args);
+    if (out === null) { printPrompt(); return; } // clear
+    if (out !== '') printLine(out);
+  } else {
+    printLine(w(c.red, `zsh: command not found: ${cmd}`));
+  }
+
+  printPrompt();
+}
+
+function printPrompt() {
+  term.write(prompt());
+}
+
+term.onKey(({ key, domEvent }) => {
+  const ev = domEvent;
+
+  // Enter
+  if (ev.key === 'Enter') {
+    runCommand(inputBuffer);
+    inputBuffer = '';
+    return;
+  }
+
+  // Backspace
+  if (ev.key === 'Backspace') {
+    if (inputBuffer.length > 0) {
+      inputBuffer = inputBuffer.slice(0, -1);
+      term.write('\b \b');
+    }
+    return;
+  }
+
+  // History up
+  if (ev.key === 'ArrowUp') {
+    if (historyIdx > 0) {
+      historyIdx--;
+      replaceInput(historyStack[historyIdx]);
+    }
+    return;
+  }
+
+  // History down
+  if (ev.key === 'ArrowDown') {
+    if (historyIdx < historyStack.length - 1) {
+      historyIdx++;
+      replaceInput(historyStack[historyIdx]);
+    } else {
+      historyIdx = historyStack.length;
+      replaceInput('');
+    }
+    return;
+  }
+
+  // Tab completion
+  if (ev.key === 'Tab') { tabComplete(); return; }
+
+  // Ctrl+C
+  if (ev.ctrlKey && ev.key === 'c') {
+    term.write('^C\r\n');
+    inputBuffer = '';
+    printPrompt();
+    return;
+  }
+
+  // Ctrl+L
+  if (ev.ctrlKey && ev.key === 'l') {
+    commands.clear();
+    inputBuffer = '';
+    printPrompt();
+    return;
+  }
+
+  // Ctrl+U
+  if (ev.ctrlKey && ev.key === 'u') {
+    inputBuffer = '';
+    replaceInput('');
+    return;
+  }
+
+  // Ignore other control keys
+  if (ev.ctrlKey || ev.altKey || ev.metaKey) return;
+  if (key.length !== 1) return;
+
+  inputBuffer += key;
+  term.write(key);
+});
+
+function replaceInput(newText) {
+  term.write('\r' + prompt() + newText + '\x1b[K');
+  inputBuffer = newText;
+}
+
+// ─── Boot sequence ────────────────────────────────────────────────────────────
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function boot() {
+  const lines = [
+    w(c.muted, 'Last login: ' + new Date().toDateString() + ' on ttys000'),
+    '',
+    w(c.green+c.bold, '  Wyatt Scott') + w(c.muted, '  —  Type ' + w(c.cyan, 'ls') + w(c.muted, ' to browse, or ') + w(c.cyan, 'help') + w(c.muted, ' for all commands.')),
+    '',
+  ];
+
+  for (const line of lines) {
+    await sleep(60);
+    printLine(line);
+  }
+
+  printPrompt();
+}
+
+boot();
+</script>
+</body>
+</html>
